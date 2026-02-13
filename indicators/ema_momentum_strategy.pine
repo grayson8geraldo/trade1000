@@ -1,0 +1,270 @@
+//@version=5
+indicator("EMA Momentum Scalper | $100→$1000", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// EMA Settings
+ema_fast_len    = input.int(9,   "Fast EMA Length",     minval=1, group="EMA Settings")
+ema_slow_len    = input.int(21,  "Slow EMA Length",     minval=1, group="EMA Settings")
+ema_trend_len   = input.int(50,  "Trend EMA Length",    minval=1, group="EMA Settings")
+
+// RSI Settings
+rsi_len         = input.int(14,  "RSI Length",          minval=1, group="RSI Settings")
+rsi_ob          = input.int(70,  "RSI Overbought",      minval=50, maxval=95, group="RSI Settings")
+rsi_os          = input.int(30,  "RSI Oversold",         minval=5,  maxval=50, group="RSI Settings")
+
+// ATR Settings
+atr_len         = input.int(14,  "ATR Length",          minval=1, group="ATR Settings")
+sl_atr_mult     = input.float(1.5, "Stop Loss ATR Multiplier", minval=0.5, maxval=5.0, step=0.1, group="ATR Settings")
+
+// Volume Settings
+vol_ma_len      = input.int(20,  "Volume MA Length",    minval=1, group="Volume Settings")
+vol_mult        = input.float(1.0, "Volume Threshold Multiplier", minval=0.5, maxval=3.0, step=0.1, group="Volume Settings")
+
+// Risk Management
+risk_pct        = input.float(2.0, "Risk Per Trade (%)", minval=0.5, maxval=5.0, step=0.5, group="Risk Management")
+account_size    = input.float(100, "Account Size ($)",   minval=1, group="Risk Management")
+leverage        = input.int(5,    "Leverage",            minval=1, maxval=20, group="Risk Management")
+rr_tp1          = input.float(1.5, "TP1 Risk:Reward",   minval=1.0, maxval=5.0, step=0.1, group="Risk Management")
+rr_tp2          = input.float(2.5, "TP2 Risk:Reward",   minval=1.0, maxval=5.0, step=0.1, group="Risk Management")
+rr_tp3          = input.float(3.5, "TP3 Risk:Reward",   minval=1.0, maxval=10.0, step=0.1, group="Risk Management")
+
+// Display Settings
+show_signals    = input.bool(true,  "Show Entry Signals",    group="Display")
+show_sl_tp      = input.bool(true,  "Show SL/TP Lines",      group="Display")
+show_info       = input.bool(true,  "Show Info Panel",        group="Display")
+show_vwap       = input.bool(true,  "Show VWAP",             group="Display")
+show_htf_trend  = input.bool(true,  "Show HTF Trend BG",     group="Display")
+
+// ============================================================================
+// CALCULATIONS
+// ============================================================================
+
+// EMAs
+ema_fast  = ta.ema(close, ema_fast_len)
+ema_slow  = ta.ema(close, ema_slow_len)
+ema_trend = ta.ema(close, ema_trend_len)
+
+// RSI
+rsi_val = ta.rsi(close, rsi_len)
+
+// ATR
+atr_val = ta.atr(atr_len)
+
+// Volume
+vol_ma = ta.sma(volume, vol_ma_len)
+vol_spike = volume > vol_ma * vol_mult
+
+// VWAP
+vwap_val = ta.vwap(hlc3)
+
+// Higher Timeframe Trend (1H EMA 50)
+htf_ema50 = request.security(syminfo.tickerid, "60", ta.ema(close, 50))
+htf_rsi   = request.security(syminfo.tickerid, "60", ta.rsi(close, 14))
+
+// 15M Confirmation
+m15_ema9   = request.security(syminfo.tickerid, "15", ta.ema(close, 9))
+m15_ema21  = request.security(syminfo.tickerid, "15", ta.ema(close, 21))
+m15_rsi    = request.security(syminfo.tickerid, "15", ta.rsi(close, 14))
+
+// ============================================================================
+// TREND DETERMINATION
+// ============================================================================
+
+// 1H Trend
+htf_bullish = close > htf_ema50 and htf_rsi > 45
+htf_bearish = close < htf_ema50 and htf_rsi < 55
+
+// 15M Momentum
+m15_bull_momentum = m15_ema9 > m15_ema21 and m15_rsi > 50
+m15_bear_momentum = m15_ema9 < m15_ema21 and m15_rsi < 50
+
+// 5M EMA Cross
+ema_bull_cross = ta.crossover(ema_fast, ema_slow)
+ema_bear_cross = ta.crossunder(ema_fast, ema_slow)
+
+// 5M Pullback to EMA 21
+pullback_to_ema21_long  = low <= ema_slow * 1.001 and close > ema_slow and close > open
+pullback_to_ema21_short = high >= ema_slow * 0.999 and close < ema_slow and close < open
+
+// 5M VWAP bounce
+vwap_bounce_long  = low <= vwap_val * 1.002 and close > vwap_val and close > open
+vwap_bounce_short = high >= vwap_val * 0.998 and close < vwap_val and close < open
+
+// ============================================================================
+// SIGNAL GENERATION
+// ============================================================================
+
+// Long Signal
+long_trigger = ema_bull_cross or pullback_to_ema21_long or vwap_bounce_long
+long_rsi_ok  = rsi_val > 40 and rsi_val < 65
+long_signal  = htf_bullish and m15_bull_momentum and long_trigger and long_rsi_ok and vol_spike
+
+// Short Signal
+short_trigger = ema_bear_cross or pullback_to_ema21_short or vwap_bounce_short
+short_rsi_ok  = rsi_val > 35 and rsi_val < 60
+short_signal  = htf_bearish and m15_bear_momentum and short_trigger and short_rsi_ok and vol_spike
+
+// ============================================================================
+// STOP LOSS & TAKE PROFIT CALCULATIONS
+// ============================================================================
+
+var float long_sl   = na
+var float long_tp1  = na
+var float long_tp2  = na
+var float long_tp3  = na
+var float short_sl  = na
+var float short_tp1 = na
+var float short_tp2 = na
+var float short_tp3 = na
+var bool  in_long   = false
+var bool  in_short  = false
+
+if long_signal and not in_long and not in_short
+    long_sl   := close - atr_val * sl_atr_mult
+    sl_dist    = close - long_sl
+    long_tp1  := close + sl_dist * rr_tp1
+    long_tp2  := close + sl_dist * rr_tp2
+    long_tp3  := close + sl_dist * rr_tp3
+    in_long   := true
+    in_short  := false
+
+if short_signal and not in_short and not in_long
+    short_sl  := close + atr_val * sl_atr_mult
+    sl_dist    = short_sl - close
+    short_tp1 := close - sl_dist * rr_tp1
+    short_tp2 := close - sl_dist * rr_tp2
+    short_tp3 := close - sl_dist * rr_tp3
+    in_short  := true
+    in_long   := false
+
+// Exit logic
+if in_long and (low <= long_sl or high >= long_tp3)
+    in_long := false
+
+if in_short and (high >= short_sl or low <= short_tp3)
+    in_short := false
+
+// ============================================================================
+// POSITION SIZE CALCULATION
+// ============================================================================
+
+risk_amount = account_size * (risk_pct / 100)
+sl_distance_pct = atr_val * sl_atr_mult / close * 100
+raw_position = risk_amount / (sl_distance_pct / 100)
+leveraged_margin = raw_position / leverage
+position_size = math.min(raw_position, account_size * leverage)
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+
+// EMAs
+plot(ema_fast,  "EMA Fast",  color=color.yellow, linewidth=1)
+plot(ema_slow,  "EMA Slow",  color=color.new(#2196F3, 0), linewidth=2)
+plot(ema_trend, "EMA Trend", color=color.white,  linewidth=2)
+
+// VWAP
+plot(show_vwap ? vwap_val : na, "VWAP", color=color.new(#9C27B0, 20), linewidth=2, style=plot.style_circles)
+
+// HTF Trend Background
+bgcolor(show_htf_trend and htf_bullish ? color.new(color.green, 92) : na, title="Bullish HTF BG")
+bgcolor(show_htf_trend and htf_bearish ? color.new(color.red, 92) : na, title="Bearish HTF BG")
+
+// Volume spike highlight
+barcolor(vol_spike ? (close > open ? color.new(color.lime, 0) : color.new(color.red, 0)) : na)
+
+// ============================================================================
+// SIGNALS
+// ============================================================================
+
+// Long signal
+plotshape(show_signals and long_signal, "Long Signal",
+     style=shape.triangleup, location=location.belowbar,
+     color=color.new(#00E676, 0), size=size.small, text="LONG")
+
+// Short signal
+plotshape(show_signals and short_signal, "Short Signal",
+     style=shape.triangledown, location=location.abovebar,
+     color=color.new(#FF1744, 0), size=size.small, text="SHORT")
+
+// ============================================================================
+// SL/TP LINES
+// ============================================================================
+
+// Long SL/TP
+plot(show_sl_tp and in_long ? long_sl  : na, "Long SL",  color=color.red,    linewidth=1, style=plot.style_linebr)
+plot(show_sl_tp and in_long ? long_tp1 : na, "Long TP1", color=color.green,  linewidth=1, style=plot.style_linebr)
+plot(show_sl_tp and in_long ? long_tp2 : na, "Long TP2", color=color.green,  linewidth=1, style=plot.style_linebr)
+plot(show_sl_tp and in_long ? long_tp3 : na, "Long TP3", color=color.lime,   linewidth=2, style=plot.style_linebr)
+
+// Short SL/TP
+plot(show_sl_tp and in_short ? short_sl  : na, "Short SL",  color=color.red,    linewidth=1, style=plot.style_linebr)
+plot(show_sl_tp and in_short ? short_tp1 : na, "Short TP1", color=color.green,  linewidth=1, style=plot.style_linebr)
+plot(show_sl_tp and in_short ? short_tp2 : na, "Short TP2", color=color.green,  linewidth=1, style=plot.style_linebr)
+plot(show_sl_tp and in_short ? short_tp3 : na, "Short TP3", color=color.lime,   linewidth=2, style=plot.style_linebr)
+
+// ============================================================================
+// INFO TABLE
+// ============================================================================
+
+if show_info and barstate.islast
+    var table info = table.new(position.top_right, 2, 12,
+         bgcolor=color.new(#1E1E1E, 10), border_color=color.new(color.gray, 50), border_width=1)
+
+    trend_str = htf_bullish ? "BULLISH" : htf_bearish ? "BEARISH" : "NEUTRAL"
+    trend_clr = htf_bullish ? color.green : htf_bearish ? color.red : color.gray
+
+    m15_str = m15_bull_momentum ? "BULLISH" : m15_bear_momentum ? "BEARISH" : "NEUTRAL"
+    m15_clr = m15_bull_momentum ? color.green : m15_bear_momentum ? color.red : color.gray
+
+    table.cell(info, 0, 0,  "1H Trend",        text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 0,  trend_str,          text_color=trend_clr,  text_size=size.small)
+
+    table.cell(info, 0, 1,  "15M Momentum",     text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 1,  m15_str,            text_color=m15_clr,    text_size=size.small)
+
+    table.cell(info, 0, 2,  "RSI (5M)",         text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 2,  str.tostring(rsi_val, "#.0"),
+         text_color=rsi_val > rsi_ob ? color.red : rsi_val < rsi_os ? color.green : color.white, text_size=size.small)
+
+    table.cell(info, 0, 3,  "ATR",              text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 3,  str.tostring(atr_val, "#.00"), text_color=color.white, text_size=size.small)
+
+    table.cell(info, 0, 4,  "VWAP",             text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 4,  str.tostring(vwap_val, "#.00"),
+         text_color=close > vwap_val ? color.green : color.red, text_size=size.small)
+
+    table.cell(info, 0, 5,  "Volume Spike",     text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 5,  vol_spike ? "YES" : "NO",
+         text_color=vol_spike ? color.green : color.gray, text_size=size.small)
+
+    table.cell(info, 0, 6,  "─────────",        text_color=color.gray,  text_size=size.small)
+    table.cell(info, 1, 6,  "─────────",        text_color=color.gray,  text_size=size.small)
+
+    table.cell(info, 0, 7,  "Risk ($)",          text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 7,  str.tostring(risk_amount, "#.00"), text_color=color.yellow, text_size=size.small)
+
+    table.cell(info, 0, 8,  "Position Size ($)", text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 8,  str.tostring(position_size, "#.00"), text_color=color.yellow, text_size=size.small)
+
+    table.cell(info, 0, 9,  "Margin Req ($)",    text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 9,  str.tostring(position_size / leverage, "#.00"), text_color=color.yellow, text_size=size.small)
+
+    table.cell(info, 0, 10, "SL Distance",       text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 10, str.tostring(sl_distance_pct, "#.000") + "%", text_color=color.orange, text_size=size.small)
+
+    signal_str = long_signal ? ">>> LONG <<<" : short_signal ? ">>> SHORT <<<" : "No Signal"
+    signal_clr = long_signal ? color.green : short_signal ? color.red : color.gray
+    table.cell(info, 0, 11, "SIGNAL",            text_color=color.white,  text_size=size.normal)
+    table.cell(info, 1, 11, signal_str,          text_color=signal_clr,   text_size=size.normal)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(long_signal,  "Long Entry Signal",  "EMA Momentum: LONG signal on {{ticker}} at {{close}}")
+alertcondition(short_signal, "Short Entry Signal", "EMA Momentum: SHORT signal on {{ticker}} at {{close}}")
+alertcondition(vol_spike,    "Volume Spike",       "Volume spike detected on {{ticker}}")
