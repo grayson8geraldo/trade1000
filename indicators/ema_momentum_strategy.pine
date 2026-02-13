@@ -262,9 +262,22 @@ if show_info and barstate.islast
     table.cell(info, 1, 11, signal_str,          text_color=signal_clr,   text_size=size.normal)
 
 // ============================================================================
-// ALERTS
+// ALERTS (with JSON payload for Telegram webhook)
 // ============================================================================
 
+// --- JSON payloads for webhook ---
+long_json = '{"signal":"LONG","ticker":"' + syminfo.ticker + '","price":"' + str.tostring(close, "#.00") + '","timeframe":"' + timeframe.period + '","trend_1h":"BULLISH","momentum_15m":"BULLISH","rsi":"' + str.tostring(rsi_val, "#.0") + '","atr":"' + str.tostring(atr_val, "#.00") + '","sl":"' + str.tostring(close - atr_val * sl_atr_mult, "#.00") + '","tp1":"' + str.tostring(close + atr_val * sl_atr_mult * rr_tp1, "#.00") + '","tp2":"' + str.tostring(close + atr_val * sl_atr_mult * rr_tp2, "#.00") + '","tp3":"' + str.tostring(close + atr_val * sl_atr_mult * rr_tp3, "#.00") + '"}'
+
+short_json = '{"signal":"SHORT","ticker":"' + syminfo.ticker + '","price":"' + str.tostring(close, "#.00") + '","timeframe":"' + timeframe.period + '","trend_1h":"BEARISH","momentum_15m":"BEARISH","rsi":"' + str.tostring(rsi_val, "#.0") + '","atr":"' + str.tostring(atr_val, "#.00") + '","sl":"' + str.tostring(close + atr_val * sl_atr_mult, "#.00") + '","tp1":"' + str.tostring(close - atr_val * sl_atr_mult * rr_tp1, "#.00") + '","tp2":"' + str.tostring(close - atr_val * sl_atr_mult * rr_tp2, "#.00") + '","tp3":"' + str.tostring(close - atr_val * sl_atr_mult * rr_tp3, "#.00") + '"}'
+
+// --- Simple alerts (for TradingView notifications / email) ---
 alertcondition(long_signal,  "Long Entry Signal",  "EMA Momentum: LONG signal on {{ticker}} at {{close}}")
 alertcondition(short_signal, "Short Entry Signal", "EMA Momentum: SHORT signal on {{ticker}} at {{close}}")
 alertcondition(vol_spike,    "Volume Spike",       "Volume spike detected on {{ticker}}")
+
+// --- Webhook alerts (for Telegram bot) ---
+if long_signal
+    alert(long_json, alert.freq_once_per_bar)
+
+if short_signal
+    alert(short_json, alert.freq_once_per_bar)
